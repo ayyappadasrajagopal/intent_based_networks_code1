@@ -1,3 +1,6 @@
+clc;
+close all;
+clear all;
 
 % Example 1: Servo control
 intent = "Rotate servo to 45 degrees, wait 2 seconds, then return to 0 degrees.";
@@ -10,49 +13,64 @@ actions = intent_to_actions(intent);
 disp(actions);
 
 
-%% Intent → Actions using LLM (OpenAI API)
-% Make sure to set your API key first in terminal/PowerShell:
-%   setx OPENAI_API_KEY "your_api_key_here"   (Windows)
-%   export OPENAI_API_KEY="your_api_key_here" (Linux/Mac)
 
 function actions = intent_to_actions(intent)
-    % Read API key
-    apiKey = getenv("OPENAI_API_KEY");
-    if isempty(apiKey)
-        error("No API key found. Please set OPENAI_API_KEY environment variable.");
-    end
-
+    % === Paste your OpenAI API key here (or use getenv if set) ===
+    apiKey = getenv("OPENAI_API_KEY");  % <-- replace with your API key
+    
     % API endpoint
     url = "https://api.openai.com/v1/chat/completions";
 
-    % Define system & user prompts
-    data = struct( ...
-        "model", "gpt-4o-mini", ... % Or "gpt-4o", "gpt-5" when available
-        "messages", { ...
-            struct("role","system","content", ...
-                   "You are an intent-to-action translator. " + ...
-                   "Translate user intent into a JSON sequence of executable actions."), ...
-            struct("role","user","content", intent) ...
-        } ...
-    );
+    % Prepare request data
+    data = struct();
+    data.model = "gpt-4o-mini";   % use gpt-4o-mini (cheaper & fewer rate limits)
+    data.messages = { ...
+        struct("role","system","content", ...
+               "You are an intent-to-action translator. Translate user intent into a JSON sequence of executable actions."), ...
+        struct("role","user","content", intent) ...
+    };
 
-    % Setup options
+    % Encode JSON body
+    body = jsonencode(data);
+
+    % HTTP options
     opts = weboptions( ...
         "HeaderFields", ["Authorization", "Bearer " + apiKey; ...
                          "Content-Type","application/json"], ...
+        "ContentType","json", ...
         "Timeout", 60);
 
-    % Call API
-    response = webwrite(url, data, opts);
+    % === Retry logic for 429 Too Many Requests ===
+    maxRetries = 5;
+    waitTime = 2; % start with 2 seconds
 
-    % Extract response
+    for attempt = 1:maxRetries
+        try
+            response = webwrite(url, body, opts);
+            break; % success → exit loop
+        catch ME
+            if contains(ME.message,"429") % rate limit error
+                fprintf("Rate limit hit (429). Retrying in %d seconds... (Attempt %d/%d)\n", ...
+                        waitTime, attempt, maxRetries);
+                pause(waitTime);
+                waitTime = waitTime * 2; % exponential backoff
+            else
+                rethrow(ME); % different error → rethrow
+            end
+        end
+        if attempt == maxRetries
+            error("Failed after %d retries due to repeated 429 errors.", maxRetries);
+        end
+    end
+
+    % Extract model output
     rawText = response.choices(1).message.content;
     fprintf("LLM Output:\n%s\n", rawText);
 
-    % Try to decode JSON if present
+    % Try to parse JSON, else return plain text
     try
         actions = jsondecode(rawText);
     catch
-        actions = rawText; % fallback to plain text
+        actions = rawText;
     end
 end
