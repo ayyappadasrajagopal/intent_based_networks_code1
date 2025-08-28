@@ -14,60 +14,44 @@ disp(actions);
 
 
 
-function actions = intent_to_actions(intent)
-    % === Paste your OpenAI API key here (or use getenv if set) ===
-    apiKey = getenv("OPENAI_API_KEY");  % <-- replace with your API key
-    
-    % API endpoint
-    url = "https://api.openai.com/v1/chat/completions";
+function actions = intent_to_actions_gemini(intent)
+    apiKey = "YOUR_GEMINI_API_KEY";  % paste your Gemini key here
+    url = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
 
-    % Prepare request data
-    data = struct();
-    data.model = "gpt-4o-mini";   % use gpt-4o-mini (cheaper & fewer rate limits)
-    data.messages = { ...
-        struct("role","system","content", ...
-               "You are an intent-to-action translator. Translate user intent into a JSON sequence of executable actions."), ...
-        struct("role","user","content", intent) ...
-    };
+    data = struct( ...
+        "model", "gemini-2.5-flash", ...
+        "messages", { ...
+            struct("role","system","content","Translate intent into JSON actions."), ...
+            struct("role","user","content", intent) ...
+        } ...
+    );
 
-    % Encode JSON body
     body = jsonencode(data);
-
-    % HTTP options
     opts = weboptions( ...
-        "HeaderFields", ["Authorization", "Bearer " + apiKey; ...
-                         "Content-Type","application/json"], ...
+        "HeaderFields", ["Authorization", "Bearer " + apiKey; "Content-Type","application/json"], ...
         "ContentType","json", ...
         "Timeout", 60);
 
-    % === Retry logic for 429 Too Many Requests ===
-    maxRetries = 5;
-    waitTime = 2; % start with 2 seconds
-
+    maxRetries = 5; waitTime = 2;
     for attempt = 1:maxRetries
         try
             response = webwrite(url, body, opts);
-            break; % success → exit loop
+            break;
         catch ME
-            if contains(ME.message,"429") % rate limit error
-                fprintf("Rate limit hit (429). Retrying in %d seconds... (Attempt %d/%d)\n", ...
-                        waitTime, attempt, maxRetries);
-                pause(waitTime);
-                waitTime = waitTime * 2; % exponential backoff
+            if contains(ME.message,"429")
+                fprintf("429 Too Many Requests—retrying in %d sec (try %d/%d)\n", waitTime, attempt, maxRetries);
+                pause(waitTime); waitTime = waitTime*2;
             else
-                rethrow(ME); % different error → rethrow
+                rethrow(ME);
             end
         end
         if attempt == maxRetries
-            error("Failed after %d retries due to repeated 429 errors.", maxRetries);
+            error("Exceeded retry limit due to repeated 429 errors.");
         end
     end
 
-    % Extract model output
     rawText = response.choices(1).message.content;
-    fprintf("LLM Output:\n%s\n", rawText);
-
-    % Try to parse JSON, else return plain text
+    fprintf("Gemini Output:\n%s\n", rawText);
     try
         actions = jsondecode(rawText);
     catch
