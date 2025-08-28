@@ -4,95 +4,108 @@ clear all;
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-% % Example usage of intent_to_actions_gemini.m
-% generate_with_gemini("Rotate servo 90 degrees, wait 2 seconds, then return to 0.");
-% 
-% function generate_with_gemini(prompt)
-%     % Set your Gemini API Key (get it from AI Studio: https://aistudio.google.com/app/apikey)
-%     apiKey = getenv("GEMINI_API_KEY");
-%     if isempty(apiKey)
-%         error("GEMINI_API_KEY environment variable not set. Run: setx GEMINI_API_KEY ""your_key_here"" ");
-%     end
-% 
-%     % Gemini endpoint
-%     url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" + apiKey;
-% 
-%     % Build request JSON
-%     data = struct( ...
-%         "contents", {struct( ...
-%             "role","user", ...
-%             "parts", {struct("text", prompt)} ...
-%         )}, ...
-%         "generationConfig", struct( ...
-%             "response_mime_type","application/json" ...
-%         ) ...
-%     );
-% 
-%     % Convert to JSON string
-%     body = jsonencode(data);
-% 
-%     % Web options
-%     opts = weboptions( ...
-%         "MediaType","application/json", ...
-%         "Timeout",60 ...
-%     );
-% 
-%     % Make the request
-%     response = webwrite(url, body, opts);
-% 
-%     % Extract candidates
-%     if isfield(response,"candidates") && ~isempty(response.candidates)
-%         disp("---- Gemini Response ----");
-%         disp(response.candidates(1).content.parts(1).text);
-%     else
-%         disp("No candidates returned.");
-%     end
-% end
+% Example usage of intent_to_actions_gemini.m
+rawText = generate_with_gemini("Rotate servo 180 degrees, wait 40 seconds and then to 90 by 60 seconds");
+
+function rawText = generate_with_gemini(prompt)
+    % Set your Gemini API Key (get it from AI Studio: https://aistudio.google.com/app/apikey)
+    apiKey = getenv("GEMINI_API_KEY");
+    if isempty(apiKey)
+        error("GEMINI_API_KEY environment variable not set. Run: setx GEMINI_API_KEY ""your_key_here"" ");
+    end
+
+    % Gemini endpoint
+    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" + apiKey;
+
+    % Build request JSON
+    data = struct( ...
+        "contents", {struct( ...
+            "role","user", ...
+            "parts", {struct("text", prompt)} ...
+        )}, ...
+        "generationConfig", struct( ...
+            "response_mime_type","application/json" ...
+        ) ...
+    );
+
+    % Convert to JSON string
+    body = jsonencode(data);
+
+    % Web options
+    opts = weboptions( ...
+        "MediaType","application/json", ...
+        "Timeout",60 ...
+    );
+
+    % Make the request
+    response = webwrite(url, body, opts);
+
+    % Extract candidates
+    if isfield(response,"candidates") && ~isempty(response.candidates)
+        disp("---- Gemini Response ----");
+        rawText = response.candidates(1).content.parts(1).text;
+        disp(rawText);
+    else
+        disp("No candidates returned.");
+    end
+end
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
-
-% % Example raw JSON text from Gemini
-% rawText = '{"commands": [{"servo": {"angle": 90, "time": 2000}}, {"servo": {"angle": 0, "time": 0}}, {"servo": {"angle": 45, "time": 1000}}]}';
-% 
-% % Decode JSON into MATLAB struct
-% cmds = jsondecode(rawText);
-% 
-% % Preallocate arrays
-% n = numel(cmds.commands);
-% angles = zeros(1,n);
-% times  = zeros(1,n);
-% 
-% % Extract each command
-% for k = 1:n
-%     angles(k) = cmds.commands(k).servo.angle;
-%     times(k)  = cmds.commands(k).servo.time;
-% end
-% 
-% % Show result
-% disp("Decoded Servo Commands:");
-% table(times(:), angles(:), 'VariableNames', {'Time_ms','Angle_deg'})
-
-% servo_tracking_discrete.m
-% Discrete-time state-space servo tracking of JSON commands using LQR + Nbar.
-% Copy this file and run in MATLAB.
-
-clear; close all; clc;
-
-%% === Example JSON (replace rawText with real Gemini output) ===
-rawText = '{"commands": [{"servo": {"angle": 180, "time": 40}}]}';
-
-%% === Decode JSON and extract trajectory ===
+% Decode JSON
 cmds = jsondecode(rawText);
-nCmd = numel(cmds.commands);
-angles_deg = zeros(1, nCmd);
-dur_ms     = zeros(1, nCmd);
 
-for k = 1:nCmd
-    entry = cmds.commands(k).servo;
-    angles_deg(k) = double(entry.angle);
-    dur_ms(k)     = double(entry.time)*1000;
+% Possible field names Gemini might use
+possibleFields = ["servo", "command", "commands", "servoCommands", "servo_actions", "servo_movements"];
+
+% Initialize empty
+actions = [];
+
+% Check which field exists
+for f = possibleFields
+    if isfield(cmds, f)
+        actions = cmds.(f);
+        break;
+    end
 end
+
+% If still empty, maybe nested differently (e.g., cmds.servo.angle)
+if isempty(actions)
+    warning("No recognized servo command field found.");
+else
+    % Loop through extracted actions
+    for k = 1:length(actions)
+        % Sometimes Gemini uses "time", sometimes "duration" or "wait"
+        if isfield(actions(k), "time")
+            duration = actions(k).time;
+        elseif isfield(actions(k), "duration")
+            duration = actions(k).duration;
+        elseif isfield(actions(k), "wait")
+            duration = actions(k).wait;
+        else
+            duration = NaN; % fallback
+        end
+
+        % Angle field is usually consistent
+        if isfield(actions(k), "angle")
+            angle = actions(k).angle;
+        else
+            angle = NaN;
+        end
+        
+        fprintf('Action %d: angle = %d°, duration = %d\n', k, angle, duration);
+        angles_deg(k) = angle;
+        dur_ms(k)     = duration*1000;
+    end
+    
+end
+
+% Count number of commands
+if isempty(actions)
+    numCmds = 0;
+else
+    numCmds = length(actions);
+end
+fprintf('Number of commands = %d\n', numCmds);
 dur_ms(dur_ms <= 0) = 100;  % replace 0 duration with small hold
 
 % Waypoints and desired trajectory
@@ -101,7 +114,7 @@ waypoint_angles = [0, angles_deg];
 dt = 0.01;              
 t_final = waypoint_t(end) + 1.0;
 t = 0:dt:t_final;
-ref_deg = angles_deg.*ones(1,length(t));
+ref_deg = angles_deg*ones(numCmds,length(t));
 ref_rad = deg2rad(ref_deg);
 
 %% === Continuous-time second-order servo model ===
