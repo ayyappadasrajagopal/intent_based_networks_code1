@@ -108,17 +108,19 @@ end
 fprintf('Number of commands = %d\n', numCmds);
 dur_ms(dur_ms <= 0) = 100;  % replace 0 duration with small hold
 
-% Waypoints and desired trajectory
-waypoint_t = [0, cumsum(dur_ms)/1000];
-waypoint_angles = [0, angles_deg];
-dt = 0.01;              
-t_final = waypoint_t(end) + 1.0;
+% cumulative waypoint times
+waypoint_t = [0, cumsum(dur_ms)/1000];  % seconds
+waypoint_angles = [0, angles_deg];      % start from 0 deg
+
+% discrete-time vector and reference trajectory
+dt = 0.01;                               % sample period
+t_final = waypoint_t(end) + 0.5;         % extra settle time
 t = 0:dt:t_final;
-ref_deg = angles_deg*ones(numCmds,length(t));
+ref_deg = interp1(waypoint_t, waypoint_angles, t, 'linear', 'extrap');
 ref_rad = deg2rad(ref_deg);
 
 %% === Continuous-time second-order servo model ===
-J = 1e-3;     % larger inertia → more realistic
+J = 1e-3;     % inertia
 b = 1e-2;     % damping
 K_t = 1e-2;   % torque constant
 
@@ -132,11 +134,10 @@ sys_d = c2d(sys_c, dt);
 A_d = sys_d.A; B_d = sys_d.B; C_d = sys_d.C;
 
 %% === Augment with integral action for setpoint tracking ===
-% x_aug = [x; integral_error]
 A_aug = [A_d, zeros(2,1);
          -C_d, 1];
 B_aug = [B_d; 0];
-Q = diag([50, 1, 200]);  % penalize angle + integral error
+Q = diag([50, 1, 200]);
 R = 1e-2;
 K_aug = dlqr(A_aug,B_aug,Q,R);
 
@@ -156,20 +157,16 @@ for k = 1:N-1
     e = r_k - y(k);
     intErr = intErr + e*dt;
     
-    % Control law
     u = -Kx*x(:,k) - Ki*intErr;
-    u = max(min(u,5),-5);  % saturation
+    u = max(min(u,5),-5);
     u_hist(k) = u;
     
-    % Update states
     x(:,k+1) = A_d*x(:,k) + B_d*u;
 end
 y(N) = C_d*x(:,N);
-
-%% === Convert to degrees ===
 y_deg = rad2deg(y);
 
-%% === Plots ===
+%% === Plots: tracking and control ===
 figure;
 subplot(2,1,1);
 plot(t, ref_deg,'r--','LineWidth',1.5); hold on;
@@ -183,89 +180,58 @@ plot(t,u_hist,'k','LineWidth',1.5);
 xlabel('Time (s)'); ylabel('Control input');
 title('Control Signal'); grid on;
 
+%% === Fixed 4-quadrant animation ===
+L = 0.08;  % arm length
+fig = figure('Name','Servo: Animation + Angle Plot','Units','normalized','Position',[0.1 0.1 0.6 0.7]);
 
-% ===== Fixed 4-quadrant animation (drop-in block) =====
-% Requires variables: t (time vector), y_deg (actual angle deg), ref_deg (desired angle deg)
-if ~exist('t','var') || ~exist('y_deg','var') || ~exist('ref_deg','var')
-    error('This block requires t, y_deg and ref_deg variables in the workspace.');
-end
-
-% rod length (constant radius)
-if ~exist('L','var') || isempty(L)
-    L = 0.08;  % meters (change if you want)
-end
-
-% Create figure with two subplots: top = animation, bottom = angle vs time
-fig = figure('Name','Servo: Fixed-Radius Animation + Angle Plot','Units','normalized','Position',[0.1 0.1 0.6 0.7]);
-% --- Top: fixed 4-quadrant axes
-ax1 = subplot(2,1,1);
-hold(ax1,'on');
-axis(ax1,'equal');     % keep x and y scaling equal
+% --- Top: animation axes
+ax1 = subplot(2,1,1); hold(ax1,'on'); axis(ax1,'equal');
 margin = 0.02;
-xlim(ax1,[-L-margin L+margin]);
-ylim(ax1,[-L-margin L+margin]);
-% draw cross hairs (x=0,y=0)
+xlim(ax1,[-L-margin L+margin]); ylim(ax1,[-L-margin L+margin]);
 plot(ax1,[-L-margin L+margin],[0 0],':k','LineWidth',0.8);
 plot(ax1,[0 0],[-L-margin L+margin],':k','LineWidth',0.8);
-% draw circle showing the constant radius
 theta_circ = linspace(0,2*pi,400);
-plot(ax1, L*cos(theta_circ), L*sin(theta_circ), 'Color', [0.85 0.85 0.85]);
-% pivot dot
+plot(ax1, L*cos(theta_circ), L*sin(theta_circ), 'Color',[0.85 0.85 0.85]);
 plot(ax1,0,0,'ko','MarkerFaceColor','k','MarkerSize',6);
-% plot handles for arms (initialize)
-hActual  = plot(ax1,[0 L],[0 0],'b-','LineWidth',6,'Color',[0 0.45 0.74]);
+hActual  = plot(ax1,[0 L],[0 0],'b-','LineWidth',6);
 hDesired = plot(ax1,[0 L],[0 0],'r--','LineWidth',2);
-hText    = text(ax1, -L+0.01, L-0.01, '', 'FontSize',11, 'Interpreter','none');
-title(ax1,'Servo Arm (blue = actual, red = desired)');
-xlabel(ax1,'X (m)'); ylabel(ax1,'Y (m)');
-grid(ax1,'on');
+hText    = text(ax1, -L+0.01, L-0.01, '', 'FontSize',11);
 
-% --- Bottom: angle vs time plot (preplot curves)
-ax2 = subplot(2,1,2);
-hold(ax2,'on');
-hRef = plot(ax2, t, ref_deg, 'r--', 'LineWidth', 1.4);
-hOut = plot(ax2, t, y_deg,  'b-',  'LineWidth', 1.6);
-% vertical time marker line
+title(ax1,'Servo Arm (blue = actual, red = desired)');
+xlabel(ax1,'X (m)'); ylabel(ax1,'Y (m)'); grid(ax1,'on');
+
+% --- Bottom: angle vs time plot
+ax2 = subplot(2,1,2); hold(ax2,'on');
+hRef = plot(ax2, t, ref_deg, 'r--','LineWidth',1.4);
+hOut = plot(ax2, t, y_deg,  'b-','LineWidth',1.6);
 yl = ylim(ax2);
-hTime = plot(ax2, [t(1) t(1)], yl, 'k--', 'LineWidth', 1.2);
+hTime = plot(ax2, [t(1) t(1)], yl,'k--','LineWidth',1.2);
 xlabel(ax2,'Time (s)'); ylabel(ax2,'Angle (deg)');
 legend(ax2, {'Desired','Actual'}, 'Location','best');
-title(ax2,'Angle vs Time');
-grid(ax2,'on');
-% fix y-limits so they don't autoscale during animation
+title(ax2,'Angle vs Time'); grid(ax2,'on');
 ymin = min([ref_deg(:); y_deg(:)]); ymax = max([ref_deg(:); y_deg(:)]);
-pad = max(5, 0.1*(ymax - ymin));  % at least ±5 deg padding
-ylim(ax2, [ymin - pad, ymax + pad]);
+pad = max(5, 0.1*(ymax-ymin));
+ylim(ax2, [ymin-pad, ymax+pad]);
 
-% --- Animation loop: update both arms and time marker
-dt_est = t(2) - t(1);           % estimated sample step
+% --- Animation loop
 N = length(t);
-playbackSpeed = 1;              % 1 = real-time, >1 faster, <1 slower
-frameStep = 1;                  % update every sample (set >1 to skip frames)
+playbackSpeed = 1; frameStep = 1;
 
 for k = 1:frameStep:N
-    % actual and desired angles in radians
-    thA = deg2rad(y_deg(k));   % actual (tracked)
-    thD = deg2rad(ref_deg(k)); % desired (reference)
-
-    % constant-radius endpoints
-    xA = L * cos(thA); yA = L * sin(thA);
-    xD = L * cos(thD); yD = L * sin(thD);
-
-    % update arm graphics (do NOT replot axes)
-    set(hActual,  'XData', [0 xA], 'YData', [0 yA]);
-    set(hDesired, 'XData', [0 xD], 'YData', [0 yD]);
-    set(hText,    'String', sprintf('t = %.2f s   | Actual = %.1f°   | Desired = %.1f°', ...
-        t(k), y_deg(k), ref_deg(k)));
-
-    % update time marker on bottom plot
-    set(hTime, 'XData', [t(k) t(k)], 'YData', ylim(ax2));
-
+    thA = deg2rad(y_deg(k));
+    thD = deg2rad(ref_deg(k));
+    xA = L*cos(thA); yA = L*sin(thA);
+    xD = L*cos(thD); yD = L*sin(thD);
+    
+    set(hActual,  'XData',[0 xA],'YData',[0 yA]);
+    set(hDesired, 'XData',[0 xD],'YData',[0 yD]);
+    set(hText, 'String', sprintf('t=%.2fs | Actual=%.1f° | Desired=%.1f°', t(k), y_deg(k), ref_deg(k)));
+    
+    set(hTime, 'XData',[t(k) t(k)], 'YData', ylim(ax2));
+    
     drawnow limitrate;
-
-    % pause to roughly match simulation time (adjust playbackSpeed as needed)
     if k + frameStep <= N
-        pause( (t(min(k+frameStep,N)) - t(k)) / playbackSpeed );
+        pause( (t(min(k+frameStep,N)) - t(k))/playbackSpeed );
     end
 end
 
