@@ -3,69 +3,46 @@ close all;
 clear all;
 
 % Example usage of intent_to_actions_gemini.m
+generate_with_gemini("Rotate servo 90 degrees, wait 2 seconds, then return to 0.");
 
-% Define the user intent (in natural language)
-intent = "Rotate servo to 90 degrees, wait 2 seconds, then return to 0 degrees.";
-
-% Call your function (make sure your Gemini API key is set in the function)
-actions = intent_to_actions_gemini(intent);
-
-% Display the returned structure or text
-disp("---- Actions from Gemini ----");
-disp(actions);
-
-% If it's a struct with steps, loop through them
-if isstruct(actions) && isfield(actions,"steps")
-    for i = 1:numel(actions.steps)
-        step = actions.steps(i);
-        fprintf("Step %d: %s %s %s\n", i, ...
-            string(step.action), ...
-            string(step.value), ...
-            string(step.unit));
+function generate_with_gemini(prompt)
+    % Set your Gemini API Key (get it from AI Studio: https://aistudio.google.com/app/apikey)
+    apiKey = getenv("GEMINI_API_KEY");
+    if isempty(apiKey)
+        error("GEMINI_API_KEY environment variable not set. Run: setx GEMINI_API_KEY ""your_key_here"" ");
     end
-end
 
-function actions = intent_to_actions_gemini(intent)
-    apiKey = getenv("GEMINI_API_KEY");  % paste your Gemini key here
-    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=apiKey";
+    % Gemini endpoint
+    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" + apiKey;
 
+    % Build request JSON
     data = struct( ...
-        "model", "gemini-2.5-flash", ...
-        "messages", { ...
-            struct("role","system","content","Translate intent into JSON actions."), ...
-            struct("role","user","content", intent) ...
-        } ...
+        "contents", {struct( ...
+            "role","user", ...
+            "parts", {struct("text", prompt)} ...
+        )}, ...
+        "generationConfig", struct( ...
+            "response_mime_type","application/json" ...
+        ) ...
     );
 
+    % Convert to JSON string
     body = jsonencode(data);
+
+    % Web options
     opts = weboptions( ...
-        "HeaderFields", ["Authorization", "Bearer " + apiKey; "Content-Type","application/json"], ...
-        "ContentType","json", ...
-        "Timeout", 60);
+        "MediaType","application/json", ...
+        "Timeout",60 ...
+    );
 
-    maxRetries = 5; waitTime = 2;
-    for attempt = 1:maxRetries
-        try
-            response = webwrite(url, body, opts);
-            break;
-        catch ME
-            if contains(ME.message,"429")
-                fprintf("429 Too Many Requests—retrying in %d sec (try %d/%d)\n", waitTime, attempt, maxRetries);
-                pause(waitTime); waitTime = waitTime*2;
-            else
-                rethrow(ME);
-            end
-        end
-        if attempt == maxRetries
-            error("Exceeded retry limit due to repeated 429 errors.");
-        end
-    end
+    % Make the request
+    response = webwrite(url, body, opts);
 
-    rawText = response.choices(1).message.content;
-    fprintf("Gemini Output:\n%s\n", rawText);
-    try
-        actions = jsondecode(rawText);
-    catch
-        actions = rawText;
+    % Extract candidates
+    if isfield(response,"candidates") && ~isempty(response.candidates)
+        disp("---- Gemini Response ----");
+        disp(response.candidates(1).content.parts(1).text);
+    else
+        disp("No candidates returned.");
     end
 end
