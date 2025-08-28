@@ -49,11 +49,7 @@ function rawText = generate_with_gemini(prompt)
         disp("No candidates returned.");
     end
 end
-<<<<<<< HEAD
-<<<<<<< Updated upstream
-=======
-=======
->>>>>>> working1
+
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % Decode JSON
@@ -121,16 +117,11 @@ waypoint_angles = [0, angles_deg];      % start from 0 deg
 dt = 0.01;                               % sample period
 t_final = waypoint_t(end) + 0.5;         % extra settle time
 t = 0:dt:t_final;
-<<<<<<< HEAD
-ref_deg = interp1(waypoint_t, waypoint_angles, t, 'linear', 'extrap');
-=======
 
 % Continous
 %ref_deg = interp1(waypoint_t, waypoint_angles, t, 'linear', 'extrap');
 % Discrete
 ref_deg = [0,waypoint_angles(2)*ones(1,(length(t)-1)/numCmds),waypoint_angles(3)*ones(1,(length(t)-1)/numCmds)];
-
->>>>>>> working1
 ref_rad = deg2rad(ref_deg);
 
 %% === Continuous-time second-order servo model ===
@@ -249,16 +240,7 @@ for k = 1:frameStep:N
     end
 end
 
-<<<<<<< HEAD
-
 %% === Performance metric ===
 err = ref_deg - y_deg;
 rmse = sqrt(mean(err.^2));
 fprintf('Tracking RMSE = %.3f deg\n', rmse);
->>>>>>> Stashed changes
-=======
-%% === Performance metric ===
-err = ref_deg - y_deg;
-rmse = sqrt(mean(err.^2));
-fprintf('Tracking RMSE = %.3f deg\n', rmse);
->>>>>>> working1
