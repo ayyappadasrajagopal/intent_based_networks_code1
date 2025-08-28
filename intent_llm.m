@@ -77,14 +77,12 @@ clear all;
 % Discrete-time state-space servo tracking of JSON commands using LQR + Nbar.
 % Copy this file and run in MATLAB.
 
-clear; 
-close all; 
-clc;
+clear; close all; clc;
 
 %% === Example JSON (replace rawText with real Gemini output) ===
-rawText = '{"commands": [{"servo": {"angle": 90, "time": 2000}}]}';
+rawText = '{"commands": [{"servo": {"angle": 180, "time": 40}}]}';
 
-%% === Decode JSON and extract angles & durations ===
+%% === Decode JSON and extract trajectory ===
 cmds = jsondecode(rawText);
 nCmd = numel(cmds.commands);
 angles_deg = zeros(1, nCmd);
@@ -92,148 +90,173 @@ dur_ms     = zeros(1, nCmd);
 
 for k = 1:nCmd
     entry = cmds.commands(k).servo;
-    if ~isfield(entry,'angle') || ~isfield(entry,'time')
-        error('Each servo command must include angle and time fields.');
-    end
     angles_deg(k) = double(entry.angle);
-    dur_ms(k)     = double(entry.time);
+    dur_ms(k)     = double(entry.time)*1000;
 end
+dur_ms(dur_ms <= 0) = 100;  % replace 0 duration with small hold
 
-% Interpret zero durations: replace 0 by a small hold so interpolation works
-min_hold = 100; % ms (0.1 s)
-dur_ms(dur_ms <= 0) = min_hold;
-
-% Build cumulative waypoint times in seconds
-waypoint_t = [0, cumsum(dur_ms)/1000]; % include t0 = 0
-% Build waypoint angles: assume initial angle = 0 deg at t=0,
-% then each command's angle is the target at the corresponding waypoint time.
+% Waypoints and desired trajectory
+waypoint_t = [0, cumsum(dur_ms)/1000];
 waypoint_angles = [0, angles_deg];
-
-% If user wants initial angle different, change waypoint_angles(1).
-
-%% === Build dense discrete time vector and desired trajectory (linear interp) ===
-dt = 0.01;              % sampling period (s) — discrete-time step
-t_final = waypoint_t(end) + 1.0;  % one extra second to settle
+dt = 0.01;              
+t_final = waypoint_t(end) + 1.0;
 t = 0:dt:t_final;
-% piecewise-linear interpolation of desired angle
-ref_deg = interp1(waypoint_t, waypoint_angles, t, 'linear', 'extrap');
-ref_rad = deg2rad(ref_deg);   % convert to radians for simulation
+ref_deg = angles_deg.*ones(1,length(t));
+ref_rad = deg2rad(ref_deg);
 
-%% === Continuous-time second-order servo model (radian units) ===
-% We'll use a standard mass-damper inertia model:
-% J*theta_dd + b*theta_dot = K_t * u
-% state x = [theta; theta_dot], input u = torque command
-J = 2.5e-4;     % kg*m^2 (tune for your virtual servo)
-b = 5e-6;       % N*m*s/rad (damping)
-K_t = 1e-3;     % torque per command unit (N*m per control unit)
+%% === Continuous-time second-order servo model ===
+J = 1e-3;     % larger inertia → more realistic
+b = 1e-2;     % damping
+K_t = 1e-2;   % torque constant
 
-% Continuous A,B,C,D (theta in radians)
 A_c = [0 1; 0 -b/J];
 B_c = [0; K_t/J];
 C_c = [1 0];
 D_c = 0;
 
-% Discretize
-sys_c = ss(A_c, B_c, C_c, D_c);
+sys_c = ss(A_c,B_c,C_c,D_c);
 sys_d = c2d(sys_c, dt);
-A_d = sys_d.A; B_d = sys_d.B; C_d = sys_d.C; D_d = sys_d.D;
+A_d = sys_d.A; B_d = sys_d.B; C_d = sys_d.C;
 
-%% === LQR design (discrete) ===
-% Choose Q and R to tune performance (state weighting and control cost)
-Q = diag([200, 1]);   % weight angle error heavily
-R = 1e-4;             % penalize control effort (lower -> stronger actuation)
-[K, ~, ~] = dlqr(A_d, B_d, Q, R);
+%% === Augment with integral action for setpoint tracking ===
+% x_aug = [x; integral_error]
+A_aug = [A_d, zeros(2,1);
+         -C_d, 1];
+B_aug = [B_d; 0];
+Q = diag([50, 1, 200]);  % penalize angle + integral error
+R = 1e-2;
+K_aug = dlqr(A_aug,B_aug,Q,R);
 
-% Compute steady-state feedforward gain Nbar for setpoint tracking:
-% solve u_ss such that y_ss = r and x_ss = A_d*x_ss + B_d*u_ss
-% x_ss = inv(I - A_d) * B_d * u_ss; r = C_d * x_ss => u_ss = r / (C_d * inv(I-A_d) * B_d)
-I = eye(size(A_d));
-invIA = inv(I - A_d);
-den = C_d * (invIA * B_d);
-if abs(den) < 1e-12
-    warning('Denominator for Nbar is tiny; feedforward may be unstable. Setting Nbar=1.');
-    Nbar = 1;
-else
-    Nbar = 1 / den;   % scalar because single-output
-end
+Kx = K_aug(1:2);
+Ki = K_aug(3);
 
-%% === Simulate closed-loop discrete-time dynamics ===
+%% === Simulation ===
 N = length(t);
-x = zeros(2, N);    % state history [theta; theta_dot]
-y = zeros(1, N);    % output (theta)
-u_hist = zeros(1, N);% control input (command signal)
-
-% initial state: start at ref(1) if you want to start at initial reference
-x(:,1) = [ref_rad(1); 0];  
+x = zeros(2,N);
+y = zeros(1,N);
+u_hist = zeros(1,N);
+intErr = 0;
 
 for k = 1:N-1
-    % current state
-    xk = x(:,k);
-    % reference value at this time (scalar)
     r_k = ref_rad(k);
-    % control law: u = -K*x + Nbar * r
-    u = -K * xk + Nbar * r_k;
-    % optional saturation (simulate actuator limits)
-    u = max(min(u, 5), -5);  % clamp to [-5, 5] (tweakable)
-    % state update (discrete)
-    x(:,k+1) = A_d * xk + B_d * u;
-    y(k) = C_d * xk;
+    y(k) = C_d*x(:,k);
+    e = r_k - y(k);
+    intErr = intErr + e*dt;
+    
+    % Control law
+    u = -Kx*x(:,k) - Ki*intErr;
+    u = max(min(u,5),-5);  % saturation
     u_hist(k) = u;
+    
+    % Update states
+    x(:,k+1) = A_d*x(:,k) + B_d*u;
 end
-% final outputs
- y(N) = C_d * x(:,N);
-u_hist(N) = u_hist(N-1);
+y(N) = C_d*x(:,N);
 
-% convert to degrees for plotting
+%% === Convert to degrees ===
 y_deg = rad2deg(y);
-ref_deg_plot = rad2deg(ref_rad);
 
-%% === Plots: reference vs tracked, and control input ===
-figure('Name','Discrete Servo Tracking','Units','normalized','Position',[0.1 0.1 0.8 0.7]);
-
+%% === Plots ===
+figure;
 subplot(2,1,1);
-plot(t, ref_deg_plot, 'r--','LineWidth',1.4); hold on;
-plot(t, y_deg, 'b-','LineWidth',1.8);
+plot(t, ref_deg,'r--','LineWidth',1.5); hold on;
+plot(t, y_deg,'b-','LineWidth',1.8);
 xlabel('Time (s)'); ylabel('Angle (deg)');
-legend('Desired','Tracked','Location','best');
-title('Desired vs Tracked Angle (Discrete LQR + Nbar)');
-grid on;
+legend('Desired','Tracked'); grid on;
+title('Tracking with Discrete LQR + Integral Action');
 
 subplot(2,1,2);
-plot(t, u_hist, 'k-','LineWidth',1.4);
-xlabel('Time (s)'); ylabel('Control input (u)');
-title('Control input (command)');
-grid on;
+plot(t,u_hist,'k','LineWidth',1.5);
+xlabel('Time (s)'); ylabel('Control input');
+title('Control Signal'); grid on;
 
-%% === Animation: servo arm moving over time ===
-figure('Name','Servo Animation','Units','normalized','Position',[0.05 0.05 0.35 0.4]);
-L = 0.08;  % arm length (m)
-base = [0,0];
 
-% prepare axes
-ax = gca;
-axis equal;
-axis([-0.12 0.12 -0.12 0.12]);
-hold on; grid on;
-title('Servo Arm (Discrete Simulation)');
-hArm = plot([0, L], [0,0], 'b-', 'LineWidth', 4);
-hPivot = plot(0,0,'ko','MarkerSize',8,'MarkerFaceColor','k');
-hText = text(-0.11,0.11,'', 'FontSize', 10);
-
-% animate at sampling rate (or slower for smoothness)
-frameStep = 1;  % animate every sample; increase for faster playback
-for k = 1:frameStep:N
-    th = deg2rad(y_deg(k)); % already rad but convert from deg just to be safe
-    xend = L * cos(th);
-    yend = L * sin(th);
-    set(hArm, 'XData', [0 xend], 'YData', [0 yend]);
-    set(hText, 'String', sprintf('t = %.2f s  | Desired = %.1f°  | Tracked = %.1f°', ...
-        t(k), ref_deg_plot(k), y_deg(k)));
-    drawnow;
-    pause(0.01);  % control animation speed; adjust if needed
+% ===== Fixed 4-quadrant animation (drop-in block) =====
+% Requires variables: t (time vector), y_deg (actual angle deg), ref_deg (desired angle deg)
+if ~exist('t','var') || ~exist('y_deg','var') || ~exist('ref_deg','var')
+    error('This block requires t, y_deg and ref_deg variables in the workspace.');
 end
 
-%% === Performance metrics (optional) ===
-err = ref_deg_plot - y_deg;
+% rod length (constant radius)
+if ~exist('L','var') || isempty(L)
+    L = 0.08;  % meters (change if you want)
+end
+
+% Create figure with two subplots: top = animation, bottom = angle vs time
+fig = figure('Name','Servo: Fixed-Radius Animation + Angle Plot','Units','normalized','Position',[0.1 0.1 0.6 0.7]);
+% --- Top: fixed 4-quadrant axes
+ax1 = subplot(2,1,1);
+hold(ax1,'on');
+axis(ax1,'equal');     % keep x and y scaling equal
+margin = 0.02;
+xlim(ax1,[-L-margin L+margin]);
+ylim(ax1,[-L-margin L+margin]);
+% draw cross hairs (x=0,y=0)
+plot(ax1,[-L-margin L+margin],[0 0],':k','LineWidth',0.8);
+plot(ax1,[0 0],[-L-margin L+margin],':k','LineWidth',0.8);
+% draw circle showing the constant radius
+theta_circ = linspace(0,2*pi,400);
+plot(ax1, L*cos(theta_circ), L*sin(theta_circ), 'Color', [0.85 0.85 0.85]);
+% pivot dot
+plot(ax1,0,0,'ko','MarkerFaceColor','k','MarkerSize',6);
+% plot handles for arms (initialize)
+hActual  = plot(ax1,[0 L],[0 0],'b-','LineWidth',6,'Color',[0 0.45 0.74]);
+hDesired = plot(ax1,[0 L],[0 0],'r--','LineWidth',2);
+hText    = text(ax1, -L+0.01, L-0.01, '', 'FontSize',11, 'Interpreter','none');
+title(ax1,'Servo Arm (blue = actual, red = desired)');
+xlabel(ax1,'X (m)'); ylabel(ax1,'Y (m)');
+grid(ax1,'on');
+
+% --- Bottom: angle vs time plot (preplot curves)
+ax2 = subplot(2,1,2);
+hold(ax2,'on');
+hRef = plot(ax2, t, ref_deg, 'r--', 'LineWidth', 1.4);
+hOut = plot(ax2, t, y_deg,  'b-',  'LineWidth', 1.6);
+% vertical time marker line
+yl = ylim(ax2);
+hTime = plot(ax2, [t(1) t(1)], yl, 'k--', 'LineWidth', 1.2);
+xlabel(ax2,'Time (s)'); ylabel(ax2,'Angle (deg)');
+legend(ax2, {'Desired','Actual'}, 'Location','best');
+title(ax2,'Angle vs Time');
+grid(ax2,'on');
+% fix y-limits so they don't autoscale during animation
+ymin = min([ref_deg(:); y_deg(:)]); ymax = max([ref_deg(:); y_deg(:)]);
+pad = max(5, 0.1*(ymax - ymin));  % at least ±5 deg padding
+ylim(ax2, [ymin - pad, ymax + pad]);
+
+% --- Animation loop: update both arms and time marker
+dt_est = t(2) - t(1);           % estimated sample step
+N = length(t);
+playbackSpeed = 1;              % 1 = real-time, >1 faster, <1 slower
+frameStep = 1;                  % update every sample (set >1 to skip frames)
+
+for k = 1:frameStep:N
+    % actual and desired angles in radians
+    thA = deg2rad(y_deg(k));   % actual (tracked)
+    thD = deg2rad(ref_deg(k)); % desired (reference)
+
+    % constant-radius endpoints
+    xA = L * cos(thA); yA = L * sin(thA);
+    xD = L * cos(thD); yD = L * sin(thD);
+
+    % update arm graphics (do NOT replot axes)
+    set(hActual,  'XData', [0 xA], 'YData', [0 yA]);
+    set(hDesired, 'XData', [0 xD], 'YData', [0 yD]);
+    set(hText,    'String', sprintf('t = %.2f s   | Actual = %.1f°   | Desired = %.1f°', ...
+        t(k), y_deg(k), ref_deg(k)));
+
+    % update time marker on bottom plot
+    set(hTime, 'XData', [t(k) t(k)], 'YData', ylim(ax2));
+
+    drawnow limitrate;
+
+    % pause to roughly match simulation time (adjust playbackSpeed as needed)
+    if k + frameStep <= N
+        pause( (t(min(k+frameStep,N)) - t(k)) / playbackSpeed );
+    end
+end
+
+%% === Performance metric ===
+err = ref_deg - y_deg;
 rmse = sqrt(mean(err.^2));
-fprintf('Tracking RMSE = %.4f deg over %.2f s\n', rmse, t(end));
+fprintf('Tracking RMSE = %.3f deg\n', rmse);
