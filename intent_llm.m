@@ -48,12 +48,26 @@ function generate_with_gemini(prompt)
 end
 
 
-rawText = '{"commands": [{"servo": {"angle": 90, "time": 2000}}, {"servo": {"angle": 0, "time": 0}}]}';
+% Example raw JSON text from Gemini
+rawText = '{"commands": [{"servo": {"angle": 90, "time": 2000}}, {"servo": {"angle": 0, "time": 0}}, {"servo": {"angle": 45, "time": 1000}}]}';
+
+% Decode JSON into MATLAB struct
 cmds = jsondecode(rawText);
 
-% Access first command
-disp(cmds.commands(1).servo.angle);  % → 90
-disp(cmds.commands(1).servo.time);   % → 2000
+% Preallocate arrays
+n = numel(cmds.commands);
+angles = zeros(1,n);
+times  = zeros(1,n);
+
+% Extract each command
+for k = 1:n
+    angles(k) = cmds.commands(k).servo.angle;
+    times(k)  = cmds.commands(k).servo.time;
+end
+
+% Show result
+disp("Decoded Servo Commands:");
+table(times(:), angles(:), 'VariableNames', {'Time_ms','Angle_deg'})
 
 
 %% === Parse JSON into MATLAB struct ===
