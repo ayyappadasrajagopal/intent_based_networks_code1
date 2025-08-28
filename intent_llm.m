@@ -82,7 +82,7 @@ close all;
 clc;
 
 %% === Example JSON (replace rawText with real Gemini output) ===
-rawText = '{"commands": [{"servo": {"angle": 90, "time": 2000}}, {"servo": {"angle": 0, "time": 0}}, {"servo": {"angle": 45, "time": 1000}}]}';
+rawText = '{"commands": [{"servo": {"angle": 90, "time": 2000}}]}';
 
 %% === Decode JSON and extract angles & durations ===
 cmds = jsondecode(rawText);
