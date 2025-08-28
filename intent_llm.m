@@ -46,3 +46,11 @@ function generate_with_gemini(prompt)
         disp("No candidates returned.");
     end
 end
+
+
+rawText = '{"commands": [{"servo": {"angle": 90, "time": 2000}}, {"servo": {"angle": 0, "time": 0}}]}';
+cmds = jsondecode(rawText);
+
+% Access first command
+disp(cmds.commands(1).servo.angle);  % → 90
+disp(cmds.commands(1).servo.time);   % → 2000
