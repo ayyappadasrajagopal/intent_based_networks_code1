@@ -5,6 +5,7 @@ clear all;
 % Example usage of intent_to_actions_gemini.m
 generate_with_gemini("Rotate servo 90 degrees, wait 2 seconds, then return to 0.");
 
+
 function generate_with_gemini(prompt)
     % Set your Gemini API Key (get it from AI Studio: https://aistudio.google.com/app/apikey)
     apiKey = getenv("GEMINI_API_KEY");
