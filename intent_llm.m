@@ -2,21 +2,32 @@ clc;
 close all;
 clear all;
 
-% Example 1: Servo control
-intent = "Rotate servo to 45 degrees, wait 2 seconds, then return to 0 degrees.";
-actions = intent_to_actions(intent);
+% Example usage of intent_to_actions_gemini.m
 
-% Example 2: UAV navigation
-intent = "Fly drone forward 10 meters, then ascend 5 meters, then hover.";
-actions = intent_to_actions(intent);
+% Define the user intent (in natural language)
+intent = "Rotate servo to 90 degrees, wait 2 seconds, then return to 0 degrees.";
 
+% Call your function (make sure your Gemini API key is set in the function)
+actions = intent_to_actions_gemini(intent);
+
+% Display the returned structure or text
+disp("---- Actions from Gemini ----");
 disp(actions);
 
-
+% If it's a struct with steps, loop through them
+if isstruct(actions) && isfield(actions,"steps")
+    for i = 1:numel(actions.steps)
+        step = actions.steps(i);
+        fprintf("Step %d: %s %s %s\n", i, ...
+            string(step.action), ...
+            string(step.value), ...
+            string(step.unit));
+    end
+end
 
 function actions = intent_to_actions_gemini(intent)
-    apiKey = "YOUR_GEMINI_API_KEY";  % paste your Gemini key here
-    url = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
+    apiKey = getenv("GEMINI_API_KEY");  % paste your Gemini key here
+    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=apiKey";
 
     data = struct( ...
         "model", "gemini-2.5-flash", ...
