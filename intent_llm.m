@@ -2,263 +2,238 @@ clc;
 close all;
 clear all;
 
-% Example usage of intent_to_actions_gemini.m
-generate_with_gemini("Rotate servo 90 degrees, wait 2 seconds, then return to 0.");
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-function generate_with_gemini(prompt)
-    % Set your Gemini API Key (get it from AI Studio: https://aistudio.google.com/app/apikey)
-    apiKey = getenv("GEMINI_API_KEY");
-    if isempty(apiKey)
-        error("GEMINI_API_KEY environment variable not set. Run: setx GEMINI_API_KEY ""your_key_here"" ");
-    end
+% % Example usage of intent_to_actions_gemini.m
+% generate_with_gemini("Rotate servo 90 degrees, wait 2 seconds, then return to 0.");
+% 
+% function generate_with_gemini(prompt)
+%     % Set your Gemini API Key (get it from AI Studio: https://aistudio.google.com/app/apikey)
+%     apiKey = getenv("GEMINI_API_KEY");
+%     if isempty(apiKey)
+%         error("GEMINI_API_KEY environment variable not set. Run: setx GEMINI_API_KEY ""your_key_here"" ");
+%     end
+% 
+%     % Gemini endpoint
+%     url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" + apiKey;
+% 
+%     % Build request JSON
+%     data = struct( ...
+%         "contents", {struct( ...
+%             "role","user", ...
+%             "parts", {struct("text", prompt)} ...
+%         )}, ...
+%         "generationConfig", struct( ...
+%             "response_mime_type","application/json" ...
+%         ) ...
+%     );
+% 
+%     % Convert to JSON string
+%     body = jsonencode(data);
+% 
+%     % Web options
+%     opts = weboptions( ...
+%         "MediaType","application/json", ...
+%         "Timeout",60 ...
+%     );
+% 
+%     % Make the request
+%     response = webwrite(url, body, opts);
+% 
+%     % Extract candidates
+%     if isfield(response,"candidates") && ~isempty(response.candidates)
+%         disp("---- Gemini Response ----");
+%         disp(response.candidates(1).content.parts(1).text);
+%     else
+%         disp("No candidates returned.");
+%     end
+% end
 
-    % Gemini endpoint
-    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" + apiKey;
-
-    % Build request JSON
-    data = struct( ...
-        "contents", {struct( ...
-            "role","user", ...
-            "parts", {struct("text", prompt)} ...
-        )}, ...
-        "generationConfig", struct( ...
-            "response_mime_type","application/json" ...
-        ) ...
-    );
-
-    % Convert to JSON string
-    body = jsonencode(data);
-
-    % Web options
-    opts = weboptions( ...
-        "MediaType","application/json", ...
-        "Timeout",60 ...
-    );
-
-    % Make the request
-    response = webwrite(url, body, opts);
-
-    % Extract candidates
-    if isfield(response,"candidates") && ~isempty(response.candidates)
-        disp("---- Gemini Response ----");
-        disp(response.candidates(1).content.parts(1).text);
-    else
-        disp("No candidates returned.");
-    end
-end
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 
-% Example raw JSON text from Gemini
+% % Example raw JSON text from Gemini
+% rawText = '{"commands": [{"servo": {"angle": 90, "time": 2000}}, {"servo": {"angle": 0, "time": 0}}, {"servo": {"angle": 45, "time": 1000}}]}';
+% 
+% % Decode JSON into MATLAB struct
+% cmds = jsondecode(rawText);
+% 
+% % Preallocate arrays
+% n = numel(cmds.commands);
+% angles = zeros(1,n);
+% times  = zeros(1,n);
+% 
+% % Extract each command
+% for k = 1:n
+%     angles(k) = cmds.commands(k).servo.angle;
+%     times(k)  = cmds.commands(k).servo.time;
+% end
+% 
+% % Show result
+% disp("Decoded Servo Commands:");
+% table(times(:), angles(:), 'VariableNames', {'Time_ms','Angle_deg'})
+
+% servo_tracking_discrete.m
+% Discrete-time state-space servo tracking of JSON commands using LQR + Nbar.
+% Copy this file and run in MATLAB.
+
+clear; 
+close all; 
+clc;
+
+%% === Example JSON (replace rawText with real Gemini output) ===
 rawText = '{"commands": [{"servo": {"angle": 90, "time": 2000}}, {"servo": {"angle": 0, "time": 0}}, {"servo": {"angle": 45, "time": 1000}}]}';
 
-% Decode JSON into MATLAB struct
+%% === Decode JSON and extract angles & durations ===
 cmds = jsondecode(rawText);
+nCmd = numel(cmds.commands);
+angles_deg = zeros(1, nCmd);
+dur_ms     = zeros(1, nCmd);
 
-% Preallocate arrays
-n = numel(cmds.commands);
-angles = zeros(1,n);
-times  = zeros(1,n);
-
-% Extract each command
-for k = 1:n
-    angles(k) = cmds.commands(k).servo.angle;
-    times(k)  = cmds.commands(k).servo.time;
-end
-
-% Show result
-disp("Decoded Servo Commands:");
-table(times(:), angles(:), 'VariableNames', {'Time_ms','Angle_deg'})
-
-
-%% === Parse JSON into MATLAB struct ===
-cmdStruct = jsondecode(rawText);
-
-% Validate structure
-if ~isfield(cmdStruct, 'commands')
-    error('JSON does not contain "commands" field.');
-end
-
-% Build reference trajectory: piecewise constant reference with hold times (ms)
-% We interpret each command's "angle" as degrees and "time" as dwell in ms.
-refAngles_deg = [];
-refTimes_s = [];
-
-t_cursor = 0;
-hold_default = 0.5; % seconds if time==0 (a small default hold)
-for i = 1:numel(cmdStruct.commands)
-    c = cmdStruct.commands(i).servo;
-    if ~isfield(c, 'angle') || ~isfield(c,'time')
-        error('Each servo command must have angle and time fields');
+for k = 1:nCmd
+    entry = cmds.commands(k).servo;
+    if ~isfield(entry,'angle') || ~isfield(entry,'time')
+        error('Each servo command must include angle and time fields.');
     end
-    angle = double(c.angle);          % degrees
-    dwell_ms = double(c.time);        % milliseconds
-    if dwell_ms <= 0
-        dwell_s = hold_default;
-    else
-        dwell_s = dwell_ms/1000;
-    end
-
-    % Add a small smooth ramp (0.05 s) before hold to avoid infinite derivative
-    ramp = 0.05;
-    % Append "go to angle" (instant step in reference; controller will track)
-    refAngles_deg = [refAngles_deg, angle]; %#ok<*AGROW>
-    refTimes_s  = [refTimes_s, t_cursor + ramp];  % time at end of ramp
-    t_cursor = t_cursor + ramp;
-
-    % Append hold interval end
-    refAngles_deg = [refAngles_deg, angle];
-    refTimes_s  = [refTimes_s, t_cursor + dwell_s];
-    t_cursor = t_cursor + dwell_s;
+    angles_deg(k) = double(entry.angle);
+    dur_ms(k)     = double(entry.time);
 end
 
-% Create a dense time vector for simulation
-t_sim = linspace(0, t_cursor, max(400,ceil(200*t_cursor))); % at least 400 samples
+% Interpret zero durations: replace 0 by a small hold so interpolation works
+min_hold = 100; % ms (0.1 s)
+dur_ms(dur_ms <= 0) = min_hold;
 
-% Build piecewise-constant reference over t_sim (use interp1 with 'previous')
-ref_deg = interp1(refTimes_s, refAngles_deg, t_sim, 'previous', 'extrap');
-% For the very start, ensure it begins at initial angle (use first)
-if t_sim(1) == 0
-    ref_deg(1) = refAngles_deg(1);
-end
-ref_rad = deg2rad(ref_deg);  % convert to radians
+% Build cumulative waypoint times in seconds
+waypoint_t = [0, cumsum(dur_ms)/1000]; % include t0 = 0
+% Build waypoint angles: assume initial angle = 0 deg at t=0,
+% then each command's angle is the target at the corresponding waypoint time.
+waypoint_angles = [0, angles_deg];
 
-%% === Servo / motor state-space model ===
-% Simple rotational second-order model:
-%   J * theta_dd + b * theta_d = K_t * u
-% state x = [theta; theta_dot]
-% xdot = [theta_dot; (-b/J)*theta_dot + (K_t/J) * u]
+% If user wants initial angle different, change waypoint_angles(1).
 
-J = 2.5e-4;     % moment of inertia (kg*m^2) -- adjust for your virtual servo
-b = 5e-6;       % viscous damping
-K_t = 1e-3;     % control gain (torque per command unit) - you can scale u to torque
+%% === Build dense discrete time vector and desired trajectory (linear interp) ===
+dt = 0.01;              % sampling period (s) — discrete-time step
+t_final = waypoint_t(end) + 1.0;  % one extra second to settle
+t = 0:dt:t_final;
+% piecewise-linear interpolation of desired angle
+ref_deg = interp1(waypoint_t, waypoint_angles, t, 'linear', 'extrap');
+ref_rad = deg2rad(ref_deg);   % convert to radians for simulation
 
-% Controller gains (PD)
-Kp = 60;   % proportional
-Kd = 2;    % derivative
+%% === Continuous-time second-order servo model (radian units) ===
+% We'll use a standard mass-damper inertia model:
+% J*theta_dd + b*theta_dot = K_t * u
+% state x = [theta; theta_dot], input u = torque command
+J = 2.5e-4;     % kg*m^2 (tune for your virtual servo)
+b = 5e-6;       % N*m*s/rad (damping)
+K_t = 1e-3;     % torque per command unit (N*m per control unit)
 
-% Saturation for input (command), expressed in same units as u (we will limit u)
-u_max = 2.0;    % max control command
-u_min = -2.0;
+% Continuous A,B,C,D (theta in radians)
+A_c = [0 1; 0 -b/J];
+B_c = [0; K_t/J];
+C_c = [1 0];
+D_c = 0;
 
-% Interpolate reference for use inside ODE
-ref_fun = @(t) interp1(t_sim, ref_rad, t, 'previous', ref_rad(1));
+% Discretize
+sys_c = ss(A_c, B_c, C_c, D_c);
+sys_d = c2d(sys_c, dt);
+A_d = sys_d.A; B_d = sys_d.B; C_d = sys_d.C; D_d = sys_d.D;
 
-% For derivative of ref (zero for piecewise-constant except at transitions)
-% We'll compute derivative numerically on the fly using small dt:
-ref_dot_fun = @(t) 0;  % reference is piecewise constant -> derivative zero (PD still works)
+%% === LQR design (discrete) ===
+% Choose Q and R to tune performance (state weighting and control cost)
+Q = diag([200, 1]);   % weight angle error heavily
+R = 1e-4;             % penalize control effort (lower -> stronger actuation)
+[K, ~, ~] = dlqr(A_d, B_d, Q, R);
 
-% ODE for states with feedback control
-function dx = servo_ode(t, x)
-    theta = x(1);
-    theta_dot = x(2);
-
-    r = ref_fun(t);
-    r_dot = ref_dot_fun(t);
-
-    % PD control law (on angle error)
-    e = r - theta;
-    edot = r_dot - theta_dot;
-
-    % control 'u' (command) before gain K_t
-    u = Kp*e + Kd*edot;
-
-    % saturate
-    u = min(max(u, u_min), u_max);
-
-    % dynamics
-    theta_dd = (-b/J)*theta_dot + (K_t/J) * u;
-
-    dx = [theta_dot; theta_dd];
+% Compute steady-state feedforward gain Nbar for setpoint tracking:
+% solve u_ss such that y_ss = r and x_ss = A_d*x_ss + B_d*u_ss
+% x_ss = inv(I - A_d) * B_d * u_ss; r = C_d * x_ss => u_ss = r / (C_d * inv(I-A_d) * B_d)
+I = eye(size(A_d));
+invIA = inv(I - A_d);
+den = C_d * (invIA * B_d);
+if abs(den) < 1e-12
+    warning('Denominator for Nbar is tiny; feedforward may be unstable. Setting Nbar=1.');
+    Nbar = 1;
+else
+    Nbar = 1 / den;   % scalar because single-output
 end
 
-% Initial state: assume starting at first reference
-x0 = [ref_rad(1); 0];
+%% === Simulate closed-loop discrete-time dynamics ===
+N = length(t);
+x = zeros(2, N);    % state history [theta; theta_dot]
+y = zeros(1, N);    % output (theta)
+u_hist = zeros(1, N);% control input (command signal)
 
-% Solve ODE with ode45 across time vector (use event-free integration)
-opts = odeset('RelTol',1e-6,'AbsTol',1e-8);
-[tt, xx] = ode45(@servo_ode, t_sim, x0, opts);
+% initial state: start at ref(1) if you want to start at initial reference
+x(:,1) = [ref_rad(1); 0];  
 
-theta_sim = xx(:,1);         % rad
-theta_dot_sim = xx(:,2);     % rad/s
-
-% Recompute control input history (so we can plot torque/u)
-u_hist = zeros(size(tt));
-for k = 1:length(tt)
-    r = interp1(t_sim, ref_rad, tt(k), 'previous', ref_rad(1));
-    r_dot = 0;
-    e = r - theta_sim(k);
-    edot = r_dot - theta_dot_sim(k);
-    u = Kp*e + Kd*edot;
-    u = min(max(u, u_min), u_max);
+for k = 1:N-1
+    % current state
+    xk = x(:,k);
+    % reference value at this time (scalar)
+    r_k = ref_rad(k);
+    % control law: u = -K*x + Nbar * r
+    u = -K * xk + Nbar * r_k;
+    % optional saturation (simulate actuator limits)
+    u = max(min(u, 5), -5);  % clamp to [-5, 5] (tweakable)
+    % state update (discrete)
+    x(:,k+1) = A_d * xk + B_d * u;
+    y(k) = C_d * xk;
     u_hist(k) = u;
 end
+% final outputs
+y(N) = C_d * x(:,N);
+u_hist(N) = u_hist(N-1);
 
-%% === Animate servo motion and plot results ===
-% Prepare figure
-figure('Name','Servo Simulation','Units','normalized','Position',[0.05 0.05 0.9 0.8]);
+% convert to degrees for plotting
+y_deg = rad2deg(y);
+ref_deg_plot = rad2deg(ref_rad);
 
-% Subplot A: animation axes
-ax1 = subplot(2,2,[1 3]);
-axis equal
-axis([-0.12 0.12 -0.12 0.12]);
-hold on;
+%% === Plots: reference vs tracked, and control input ===
+figure('Name','Discrete Servo Tracking','Units','normalized','Position',[0.1 0.1 0.8 0.7]);
+
+subplot(2,1,1);
+plot(t, ref_deg_plot, 'r--','LineWidth',1.4); hold on;
+plot(t, y_deg, 'b-','LineWidth',1.8);
+xlabel('Time (s)'); ylabel('Angle (deg)');
+legend('Desired','Tracked','Location','best');
+title('Desired vs Tracked Angle (Discrete LQR + Nbar)');
 grid on;
-title('Servo Arm Animation');
-xlabel('X (m)'); ylabel('Y (m)');
-% Servo arm length (m)
-L = 0.08;
-% Base origin
+
+subplot(2,1,2);
+plot(t, u_hist, 'k-','LineWidth',1.4);
+xlabel('Time (s)'); ylabel('Control input (u)');
+title('Control input (command)');
+grid on;
+
+%% === Animation: servo arm moving over time ===
+figure('Name','Servo Animation','Units','normalized','Position',[0.05 0.05 0.35 0.4]);
+L = 0.08;  % arm length (m)
 base = [0,0];
 
-% Plot static base
-plot(0,0,'ko','MarkerSize',10,'MarkerFaceColor','k');
-
-% Create line object for arm
-armLine = plot([0 L],[0 0],'-','LineWidth',4);
-pivot = plot(0,0,'ko','MarkerFaceColor','k','MarkerSize',6);
-
-% Subplot B: angle plot
-ax2 = subplot(2,2,2);
+% prepare axes
+ax = gca;
+axis equal;
+axis([-0.12 0.12 -0.12 0.12]);
 hold on; grid on;
-hRef = plot(t_sim, rad2deg(ref_rad),'--','LineWidth',1.2);
-hSim = plot(tt, rad2deg(theta_sim),'-','LineWidth',2);
-xlabel('Time (s)'); ylabel('Angle (deg)');
-title('Reference vs Simulated Angle');
-legend([hRef hSim],{'Reference','Simulated'},'Location','best');
+title('Servo Arm (Discrete Simulation)');
+hArm = plot([0, L], [0,0], 'b-', 'LineWidth', 4);
+hPivot = plot(0,0,'ko','MarkerSize',8,'MarkerFaceColor','k');
+hText = text(-0.11,0.11,'', 'FontSize', 10);
 
-% Subplot C: control input plot
-ax3 = subplot(2,2,4);
-hold on; grid on;
-hU = plot(tt, u_hist, '-','LineWidth',1.5);
-xlabel('Time (s)'); ylabel('Control command (u)');
-title('Control Input');
-
-% Animation loop: step through simulation and animate
-frames = length(tt);
-for k = 1:frames
-    th = theta_sim(k);
-    x = L*cos(th);
-    y = L*sin(th);
-    set(armLine, 'XData', [0 x], 'YData', [0 y]);
-    set(pivot, 'XData', 0, 'YData', 0);
-    % update time marker on plots
-    % show vertical line on angle plot
-    if exist('vh','var') && isvalid(vh)
-        delete(vh);
-    end
-    vh = line(ax2, [tt(k) tt(k)], ax2.YLim, 'Color', [0.5 0.5 0.5], 'LineStyle', '--');
-    % same for u plot
-    if exist('vh2','var') && isvalid(vh2)
-        delete(vh2);
-    end
-    vh2 = line(ax3, [tt(k) tt(k)], ax3.YLim, 'Color', [0.5 0.5 0.5], 'LineStyle', '--');
-
+% animate at sampling rate (or slower for smoothness)
+frameStep = 1;  % animate every sample; increase for faster playback
+for k = 1:frameStep:N
+    th = deg2rad(y_deg(k)); % already rad but convert from deg just to be safe
+    xend = L * cos(th);
+    yend = L * sin(th);
+    set(hArm, 'XData', [0 xend], 'YData', [0 yend]);
+    set(hText, 'String', sprintf('t = %.2f s  | Desired = %.1f°  | Tracked = %.1f°', ...
+        t(k), ref_deg_plot(k), y_deg(k)));
     drawnow;
-    % Slow animation to real time approximately
-    if k < frames
-        pause((tt(k+1)-tt(k))/2); % speed factor: use /1 for real-time, /2 for faster
-    end
+    pause(0.01);  % control animation speed; adjust if needed
 end
 
-% Final printout
-fprintf('Simulation complete. Total simulated time: %.3f s\n', tt(end));
+%% === Performance metrics (optional) ===
+err = ref_deg_plot - y_deg;
+rmse = sqrt(mean(err.^2));
+fprintf('Tracking RMSE = %.4f deg over %.2f s\n', rmse, t(end));
