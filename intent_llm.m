@@ -222,6 +222,7 @@ ylim(ax2, [ymin-pad, ymax+pad]);
 N = length(t);
 playbackSpeed = 1; frameStep = 1;
 
+
 for k = 1:frameStep:N
     thA = deg2rad(y_deg(k));
     thD = deg2rad(ref_deg(k));
